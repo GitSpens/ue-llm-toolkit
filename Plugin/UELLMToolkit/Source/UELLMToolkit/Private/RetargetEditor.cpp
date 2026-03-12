@@ -527,6 +527,138 @@ TSharedPtr<FJsonObject> FRetargetEditor::ListSkeletons(const FString& FolderPath
 	return Result;
 }
 
+namespace SkeletonAccess
+{
+	struct FHelper : public USkeleton
+	{
+		using USkeleton::BoneTree;
+		using USkeleton::HandleSkeletonHierarchyChange;
+	};
+}
+
+TSharedPtr<FJsonObject> FRetargetEditor::AddBoneToSkeleton(const FString& SkeletonPath,
+	const FString& BoneName, const FString& ParentBoneName,
+	const FVector& Position, const FQuat& Rotation)
+{
+	FString LoadError;
+	USkeleton* Skeleton = LoadSkeletonFromPath(SkeletonPath, LoadError);
+	if (!Skeleton)
+	{
+		return ErrorResult(LoadError);
+	}
+
+	const FReferenceSkeleton& RefSkel = Skeleton->GetReferenceSkeleton();
+
+	if (RefSkel.FindBoneIndex(FName(*BoneName)) != INDEX_NONE)
+	{
+		return ErrorResult(FString::Printf(TEXT("Bone '%s' already exists in skeleton"), *BoneName));
+	}
+
+	int32 ParentIndex = RefSkel.FindBoneIndex(FName(*ParentBoneName));
+	if (ParentIndex == INDEX_NONE)
+	{
+		return ErrorResult(FString::Printf(TEXT("Parent bone '%s' not found in skeleton"), *ParentBoneName));
+	}
+
+	FMeshBoneInfo BoneInfo(FName(*BoneName), BoneName, ParentIndex);
+	FTransform BonePose(Rotation, Position, FVector::OneVector);
+
+	{
+		FReferenceSkeletonModifier Modifier(Skeleton);
+		Modifier.Add(BoneInfo, BonePose);
+	}
+
+	auto* Helper = static_cast<SkeletonAccess::FHelper*>(Skeleton);
+	Helper->BoneTree.AddDefaulted(1);
+	Helper->HandleSkeletonHierarchyChange();
+
+	int32 NewIndex = Skeleton->GetReferenceSkeleton().FindBoneIndex(FName(*BoneName));
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("message"), FString::Printf(
+		TEXT("Added bone '%s' (index %d) as child of '%s' (index %d)"),
+		*BoneName, NewIndex, *ParentBoneName, ParentIndex));
+	Result->SetNumberField(TEXT("bone_index"), NewIndex);
+	Result->SetNumberField(TEXT("total_bones"), Skeleton->GetReferenceSkeleton().GetNum());
+	return Result;
+}
+
+TSharedPtr<FJsonObject> FRetargetEditor::CopyBoneTracks(const FString& SourceAnimPath,
+	const FString& TargetAnimPath, const TArray<FString>& BoneNames)
+{
+	FString LoadError;
+	UAnimSequence* SourceAnim = LoadAnimSequence(SourceAnimPath, LoadError);
+	if (!SourceAnim) return ErrorResult(LoadError);
+
+	UAnimSequence* TargetAnim = LoadAnimSequence(TargetAnimPath, LoadError);
+	if (!TargetAnim) return ErrorResult(LoadError);
+
+	const IAnimationDataModel* SourceModel = SourceAnim->GetDataModel();
+	if (!SourceModel) return ErrorResult(TEXT("Source animation has no data model"));
+
+	IAnimationDataController& TargetController = TargetAnim->GetController();
+	const IAnimationDataModel* TargetModel = TargetController.GetModel();
+	if (!TargetModel) return ErrorResult(TEXT("Target animation has no data model"));
+
+	int32 TargetNumKeys = TargetModel->GetNumberOfKeys();
+	int32 SourceNumKeys = SourceModel->GetNumberOfKeys();
+
+	TArray<FName> SourceTrackNames;
+	SourceModel->GetBoneTrackNames(SourceTrackNames);
+	TSet<FName> SourceTrackSet(SourceTrackNames);
+
+	TargetController.OpenBracket(FText::FromString(TEXT("CopyBoneTracks")), false);
+
+	int32 CopiedCount = 0;
+	TArray<FString> CopiedNames;
+
+	for (const FString& BoneName : BoneNames)
+	{
+		FName BoneFName(*BoneName);
+
+		if (!SourceTrackSet.Contains(BoneFName))
+		{
+			continue;
+		}
+
+		TargetController.AddBoneCurve(BoneFName, false);
+
+		TArray<FVector> Positions;
+		TArray<FQuat> Rotations;
+		TArray<FVector> Scales;
+		Positions.Reserve(TargetNumKeys);
+		Rotations.Reserve(TargetNumKeys);
+		Scales.Reserve(TargetNumKeys);
+
+		for (int32 KeyIdx = 0; KeyIdx < TargetNumKeys; ++KeyIdx)
+		{
+			int32 SourceKeyIdx = FMath::Min(KeyIdx, SourceNumKeys - 1);
+			FTransform T = SourceModel->GetBoneTrackTransform(BoneFName, FFrameNumber(SourceKeyIdx));
+			Positions.Add(T.GetLocation());
+			Rotations.Add(T.GetRotation());
+			Scales.Add(T.GetScale3D());
+		}
+
+		TargetController.SetBoneTrackKeys(BoneFName, Positions, Rotations, Scales, false);
+		CopiedCount++;
+		CopiedNames.Add(BoneName);
+	}
+
+	TargetController.CloseBracket(false);
+	TargetAnim->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("message"), FString::Printf(
+		TEXT("Copied %d bone tracks from '%s' to '%s': %s"),
+		CopiedCount, *SourceAnim->GetName(), *TargetAnim->GetName(),
+		*FString::Join(CopiedNames, TEXT(", "))));
+	Result->SetNumberField(TEXT("copied_count"), CopiedCount);
+	Result->SetNumberField(TEXT("target_total_tracks"), TargetModel->GetNumBoneTracks());
+	return Result;
+}
+
 // ============================================================================
 // IK Rig
 // ============================================================================
@@ -1372,9 +1504,19 @@ TSharedPtr<FJsonObject> FRetargetEditor::BatchRetarget(const FString& Retargeter
 			if (NewAnim)
 			{
 				NewAnim->bEnableRootMotion = true;
+				NewAnim->bForceRootLock = false;
 				NewAnim->MarkPackageDirty();
 				AssetJson->SetBoolField(TEXT("root_motion_enabled"), true);
 				RootMotionCount++;
+			}
+		}
+		else
+		{
+			UAnimSequence* NewAnim = Cast<UAnimSequence>(NewAsset.GetAsset());
+			if (NewAnim)
+			{
+				NewAnim->bForceRootLock = true;
+				NewAnim->MarkPackageDirty();
 			}
 		}
 
@@ -1398,6 +1540,7 @@ TSharedPtr<FJsonObject> FRetargetEditor::SetRootMotion(const FString& AnimPath, 
 	if (!Anim) return ErrorResult(LoadError);
 
 	Anim->bEnableRootMotion = bEnable;
+	Anim->bForceRootLock = !bEnable;
 	Anim->MarkPackageDirty();
 
 	FString State = bEnable ? TEXT("enabled") : TEXT("disabled");
