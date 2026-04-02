@@ -1,5 +1,7 @@
 // Copyright Natali Caggiano. All Rights Reserved.
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
+
 #include "MCPTool_MetaSound.h"
 #include "MetaSoundEditor.h"
 
@@ -374,3 +376,5 @@ FMCPToolResult FMCPTool_MetaSound::HandleStopPreview(const TSharedRef<FJsonObjec
 	TSharedPtr<FJsonObject> Result = FMetaSoundEditor::StopPreview();
 	return MetaSoundJsonToToolResult(Result, TEXT("MetaSound preview stopped"));
 }
+
+#endif // ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7

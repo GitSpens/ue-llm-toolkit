@@ -91,24 +91,35 @@ public class UELLMToolkit : ModuleRules
 				"SkeletalMeshDescription",
 				// Static mesh vertex transform (FStaticMeshOperations::ApplyTransform)
 				"StaticMeshDescription",
-				// Sequencer / Take Recorder
+				// Sequencer
 				"LevelSequence",
 				"LevelSequenceEditor",
 				"MovieScene",
 				"MovieSceneTracks",
 				"Sequencer",
-				"TakesCore",
-				"TakeRecorder",
-				"TakeRecorderSources",
 				// Niagara particle system inspection
 				"Niagara",
 				"NiagaraCore",
-				// MetaSound graph manipulation
-				"MetasoundEngine",
-				"MetasoundFrontend",
-				"MetasoundGraphCore"
+				// MetaSound runtime (used by Audio tool — stable since UE 5.0)
+				"MetasoundEngine"
 			}
 		);
+
+		// TakeRecorder (UE 5.7+ only)
+		if (Target.Version.MajorVersion == 5 && Target.Version.MinorVersion >= 7)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[] {
+				"TakesCore",
+				"TakeRecorder",
+				"TakeRecorderSources"
+			});
+
+			// MetaSound graph manipulation (Frontend APIs may change between UE versions)
+			PrivateDependencyModuleNames.AddRange(new string[] {
+				"MetasoundFrontend",
+				"MetasoundGraphCore"
+			});
+		}
 
 		// Clipboard support (FPlatformApplicationMisc) on all platforms
 		PrivateDependencyModuleNames.Add("ApplicationCore");

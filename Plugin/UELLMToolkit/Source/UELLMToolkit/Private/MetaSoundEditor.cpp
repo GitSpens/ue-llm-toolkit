@@ -1,6 +1,9 @@
 // Copyright Natali Caggiano. All Rights Reserved.
 
 #include "MetaSoundEditor.h"
+
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
+
 #include "MetasoundSource.h"
 #include "MetasoundFrontendDocument.h"
 #include "MetasoundFrontendDocumentBuilder.h"
@@ -679,3 +682,5 @@ TSharedPtr<FJsonObject> FMetaSoundEditor::StopPreview()
 
 	return SuccessResult(TEXT("No preview was playing"));
 }
+
+#endif // ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7

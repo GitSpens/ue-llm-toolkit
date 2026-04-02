@@ -42,7 +42,9 @@
 #include "Tools/MCPTool_Niagara.h"
 #include "Tools/MCPTool_Lighting.h"
 #include "Tools/MCPTool_Audio.h"
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 #include "Tools/MCPTool_MetaSound.h"
+#endif
 #include "Tools/MCPTool_GameFramework.h"
 
 // Task queue tools
@@ -159,8 +161,12 @@ void FMCPToolRegistry::RegisterBuiltinTools()
 	// Audio tools
 	RegisterTool(MakeShared<FMCPTool_Audio>());
 
-	// MetaSound graph tools
+	// MetaSound graph tools (requires MetasoundFrontend APIs that may change between UE versions)
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 	RegisterTool(MakeShared<FMCPTool_MetaSound>());
+#else
+	UE_LOG(LogUnrealClaude, Log, TEXT("MetaSound tool skipped — requires UE 5.7+ (MetasoundFrontend API changes)"));
+#endif
 
 	// Game framework tools
 	RegisterTool(MakeShared<FMCPTool_GameFramework>());

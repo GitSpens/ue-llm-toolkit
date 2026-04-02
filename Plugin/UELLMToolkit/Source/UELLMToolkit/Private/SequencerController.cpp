@@ -11,18 +11,23 @@
 #include "LevelEditor.h"
 #include "SLevelViewport.h"
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 #include "Recorder/TakeRecorderSubsystem.h"
 #include "Recorder/TakeRecorder.h"
 #include "TakeRecorderActorSource.h"
 #include "TakeRecorderSettings.h"
+#endif
 
 #include "GameFramework/Character.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/FrameRate.h"
 #include "Misc/PackageName.h"
 #include "UObject/SavePackage.h"
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 #include "TakesUtils.h"
+#endif
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 // ============================================================================
 // Take Recorder
 // ============================================================================
@@ -270,6 +275,39 @@ bool FSequencerController::StopTakeRecordingForPIE(FString& OutSequencePath, FSt
 		OutSequencePath.IsEmpty() ? TEXT("(none)") : *OutSequencePath);
 	return true;
 }
+
+#else // UE < 5.7 - TakeRecorder not available
+
+bool FSequencerController::StartTakeRecording(const FString& SlateName, FString& OutError)
+{
+	OutError = TEXT("TakeRecorder requires UE 5.7+");
+	return false;
+}
+
+bool FSequencerController::StopTakeRecording(FString& OutSequencePath, FString& OutError)
+{
+	OutError = TEXT("TakeRecorder requires UE 5.7+");
+	return false;
+}
+
+bool FSequencerController::GetTakeRecorderStatus(bool& bIsRecording, FString& OutState, FString& OutSequencePath)
+{
+	return false;
+}
+
+bool FSequencerController::StartTakeRecordingForPIE(UWorld* PIEWorld, const FString& SlateName, FString& OutError)
+{
+	OutError = TEXT("TakeRecorder requires UE 5.7+");
+	return false;
+}
+
+bool FSequencerController::StopTakeRecordingForPIE(FString& OutSequencePath, FString& OutError)
+{
+	OutError = TEXT("TakeRecorder requires UE 5.7+");
+	return false;
+}
+
+#endif // ENGINE_MINOR_VERSION >= 7
 
 // ============================================================================
 // Sequencer

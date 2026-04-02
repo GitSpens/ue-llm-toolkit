@@ -989,7 +989,9 @@ TSharedPtr<FJsonObject> FRetargetEditor::InspectRetargeter(const FString& Retarg
 						case EFKChainRotationMode::OneToOneReversed: FKJson->SetStringField(TEXT("rotation"), TEXT("OneToOneReversed")); break;
 						case EFKChainRotationMode::MatchChain: FKJson->SetStringField(TEXT("rotation"), TEXT("MatchChain")); break;
 						case EFKChainRotationMode::MatchScaledChain: FKJson->SetStringField(TEXT("rotation"), TEXT("MatchScaledChain")); break;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 						case EFKChainRotationMode::CopyLocal: FKJson->SetStringField(TEXT("rotation"), TEXT("CopyLocal")); break;
+#endif
 						default: FKJson->SetStringField(TEXT("rotation"), TEXT("Other")); break;
 						}
 
@@ -1001,7 +1003,11 @@ TSharedPtr<FJsonObject> FRetargetEditor::InspectRetargeter(const FString& Retarg
 					OpJson->SetArrayField(TEXT("fk_chains"), FKArray);
 
 					// Chain mapping
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 					const FRetargetChainMapping& Mapping = FKSettings->ChainMapping;
+#elif ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION == 6
+					const FRetargetChainMapping& Mapping = Retargeter->GetChainMapping();
+#endif
 					const TArray<FRetargetChainPair>& Pairs = Mapping.GetChainPairs();
 					TArray<TSharedPtr<FJsonValue>> MappingArray;
 					for (const FRetargetChainPair& Pair : Pairs)
@@ -1089,8 +1095,10 @@ TSharedPtr<FJsonObject> FRetargetEditor::CreateRetargeter(const FString& Package
 	// Add default ops, clean duplicates, assign, auto-map
 	Controller->AddDefaultOps();
 	RemoveDuplicateOps(Controller);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 	Controller->AssignIKRigToAllOps(ERetargetSourceOrTarget::Source, SourceRig);
 	Controller->AssignIKRigToAllOps(ERetargetSourceOrTarget::Target, TargetRig);
+#endif
 	Controller->AutoMapChains(EAutoMapChainType::Fuzzy, true);
 
 	// Pitfall #12: Auto-set Pelvis FK chain to GloballyScaled
@@ -1146,7 +1154,7 @@ TSharedPtr<FJsonObject> FRetargetEditor::SetupOps(const FString& RetargeterPath)
 	// Add defaults, clean dupes, assign, map (pitfalls #9, #10)
 	Controller->AddDefaultOps();
 	RemoveDuplicateOps(Controller);
-
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 	if (SourceRig)
 	{
 		Controller->AssignIKRigToAllOps(ERetargetSourceOrTarget::Source, SourceRig);
@@ -1155,6 +1163,7 @@ TSharedPtr<FJsonObject> FRetargetEditor::SetupOps(const FString& RetargeterPath)
 	{
 		Controller->AssignIKRigToAllOps(ERetargetSourceOrTarget::Target, TargetRig);
 	}
+#endif
 	Controller->AutoMapChains(EAutoMapChainType::Fuzzy, true);
 
 	Retargeter->MarkPackageDirty();
@@ -1251,7 +1260,9 @@ TSharedPtr<FJsonObject> FRetargetEditor::ConfigureFK(const FString& RetargeterPa
 			else if (RotMode == TEXT("onetoonereversed")) Setting.RotationMode = EFKChainRotationMode::OneToOneReversed;
 			else if (RotMode == TEXT("matchchain")) Setting.RotationMode = EFKChainRotationMode::MatchChain;
 			else if (RotMode == TEXT("matchscaledchain")) Setting.RotationMode = EFKChainRotationMode::MatchScaledChain;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 			else if (RotMode == TEXT("copylocal")) Setting.RotationMode = EFKChainRotationMode::CopyLocal;
+#endif
 		}
 
 		// Alpha values
@@ -1459,6 +1470,7 @@ TSharedPtr<FJsonObject> FRetargetEditor::BatchRetarget(const FString& Retargeter
 	}
 
 	// Run DuplicateAndRetarget
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 7
 	TArray<FAssetData> NewAssets = UIKRetargetBatchOperation::DuplicateAndRetarget(
 		AssetsToRetarget,
 		SourceMesh,
@@ -1471,6 +1483,19 @@ TSharedPtr<FJsonObject> FRetargetEditor::BatchRetarget(const FString& Retargeter
 		false,          // bIncludeReferencedAssets
 		true            // bOverwriteExistingFiles
 	);
+#elif ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION == 6
+	TArray<FAssetData> NewAssets = UIKRetargetBatchOperation::DuplicateAndRetarget(
+		AssetsToRetarget,
+		SourceMesh,
+		TargetMesh,
+		Retargeter,
+		TEXT(""),       // Search
+		TEXT(""),       // Replace
+		Prefix,         // Prefix
+		TEXT(""),       // Suffix
+		false           // bIncludeReferencedAssets
+	);
+#endif
 
 	// Process results
 	int32 RootMotionCount = 0;
