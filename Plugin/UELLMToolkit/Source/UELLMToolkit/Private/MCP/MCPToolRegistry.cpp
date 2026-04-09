@@ -46,6 +46,7 @@
 #include "Tools/MCPTool_MetaSound.h"
 #endif
 #include "Tools/MCPTool_GameFramework.h"
+#include "Tools/MCPTool_ScenePerformance.h"
 
 // Task queue tools
 #include "Tools/MCPTool_TaskSubmit.h"
@@ -170,6 +171,9 @@ void FMCPToolRegistry::RegisterBuiltinTools()
 
 	// Game framework tools
 	RegisterTool(MakeShared<FMCPTool_GameFramework>());
+
+	// Scene performance analysis tools
+	RegisterTool(MakeShared<FMCPTool_ScenePerformance>());
 
 	// Create and register async task queue tools
 	// Task queue takes a raw pointer since the registry always outlives it
