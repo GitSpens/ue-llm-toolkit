@@ -188,12 +188,14 @@ This weights high-poly meshes with many materials, no LODs, and shadow casting a
 | `UStaticMeshComponent` | `#include "Components/StaticMeshComponent.h"` | Get mesh reference, material slots, shadow settings | yes |
 | `USkeletalMeshComponent` | `#include "Components/SkeletalMeshComponent.h"` | Get skeletal mesh reference, material slots | yes |
 | `UInstancedStaticMeshComponent` | `#include "Components/InstancedStaticMeshComponent.h"` | Get instance count for ISM/HISM actors | yes |
-| `UStaticMesh` | `#include "Engine/StaticMesh.h"` | Access render data, LOD info, sections | [NEEDS VERIFICATION] |
-| `UStaticMesh::GetNumTriangles(int32 LODIndex)` | (same header) | Get triangle count per LOD | [NEEDS VERIFICATION] |
-| `UStaticMesh::GetNumLODs()` | (same header) | Get LOD count | [NEEDS VERIFICATION] |
-| `FStaticMeshLODResources` | `#include "StaticMeshResources.h"` | Access per-LOD vertex/triangle data, sections | [NEEDS VERIFICATION] |
-| `USkeletalMesh` | `#include "Engine/SkeletalMesh.h"` | Access LOD info, materials | [NEEDS VERIFICATION] |
-| `FSkeletalMeshLODRenderData` | `#include "Rendering/SkeletalMeshRenderData.h"` | Per-LOD triangle/vertex data | [NEEDS VERIFICATION] |
+| `UStaticMesh` | `#include "Engine/StaticMesh.h"` | Access render data, LOD info, sections | yes |
+| `UStaticMesh::GetNumLODs()` | (same header) | Get LOD count, returns `int32` | yes |
+| `UStaticMesh::GetRenderData()` | (same header) | Access `FStaticMeshRenderData` with `LODResources` array | yes |
+| `FStaticMeshLODResources` | `#include "Engine/StaticMeshResources.h"` | Per-LOD data: `GetNumTriangles()`, `GetNumVertices()`, `Sections` array | yes |
+| `USkeletalMesh` | `#include "Engine/SkeletalMesh.h"` | Access LOD info, materials | yes |
+| `USkeletalMesh::GetLODNum()` | (same header) | Get LOD count, returns `int32` (note: NOT `GetNumLODs()`) | yes |
+| `USkeletalMesh::GetResourceForRendering()` | (same header) | Access `FSkeletalMeshRenderData` with `LODRenderData` array | yes |
+| `FSkeletalMeshLODRenderData` | `#include "Rendering/SkeletalMeshLODRenderData.h"` | Per-LOD data: `GetTotalFaces()`, `GetNumVertices()`, `RenderSections` array | yes |
 | `UMaterialInterface` | `#include "Materials/MaterialInterface.h"` | Material slot references | yes |
 | `UPrimitiveComponent::CastShadow` | `#include "Components/PrimitiveComponent.h"` | Check shadow casting status | yes |
 | `UPrimitiveComponent::GetCollisionEnabled()` | (same header) | Check collision complexity | yes |
