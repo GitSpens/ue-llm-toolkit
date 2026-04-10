@@ -244,4 +244,52 @@ bool FRecommendationTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAnalysisJsonTest,
+    "UnrealClaude.RuntimeProfiler.AnalysisToJson",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FAnalysisJsonTest::RunTest(const FString& Parameters)
+{
+    FProfileAnalysis Analysis;
+    Analysis.SampleCount = 100;
+    Analysis.DurationSeconds = 20.0f;
+    Analysis.LevelName = TEXT("/Game/Maps/Village");
+    Analysis.TargetDevice = TEXT("quest_3_standalone");
+    Analysis.BottleneckThread = TEXT("gpu");
+    Analysis.FPS = {18.0f, 52.0f, 60.0f, 24.0f};
+    Analysis.FrameTimeMs = {16.6f, 19.2f, 55.5f, 41.6f};
+    Analysis.DrawCallsSummary = {180.0f, 420.0f, 3800.0f, 1200.0f};
+    Analysis.TrianglesSummary = {120000.0f, 450000.0f, 1800000.0f, 1200000.0f};
+    Analysis.MemoryMBSummary = {2800.0f, 3100.0f, 3400.0f, 3200.0f};
+    Analysis.Recommendations.Add(TEXT("Test recommendation"));
+    Analysis.DeviceWarnings.Add(TEXT("Test device warning"));
+    Analysis.OutputDir = TEXT("D:/test/output/");
+
+    TSharedPtr<FJsonObject> SummaryJson = FRuntimeProfiler::AnalysisToJson(Analysis, false);
+    TestTrue("Has session object", SummaryJson->HasField(TEXT("session")));
+    TestTrue("Has summary object", SummaryJson->HasField(TEXT("summary")));
+    TestTrue("Has recommendations", SummaryJson->HasField(TEXT("recommendations")));
+    TestTrue("Has device_warnings", SummaryJson->HasField(TEXT("device_warnings")));
+    TestFalse("Summary mode has no spikes array", SummaryJson->HasField(TEXT("spikes")));
+
+    FSpikeCluster Spike;
+    Spike.FrameStart = 10;
+    Spike.FrameEnd = 15;
+    Spike.Location = FVector(100, 200, 300);
+    Spike.AvgFrameTimeMs = 50.0f;
+    Spike.TotalDrawCalls = 3000;
+    Analysis.Spikes.Add(Spike);
+
+    TSharedPtr<FJsonObject> FullJson = FRuntimeProfiler::AnalysisToJson(Analysis, true);
+    TestTrue("Full mode has spikes array", FullJson->HasField(TEXT("spikes")));
+
+    TSharedPtr<FJsonObject> SessionObj = SummaryJson->GetObjectField(TEXT("session"));
+    TestTrue("Session has duration", SessionObj->HasField(TEXT("duration_s")));
+    TestTrue("Session has target_device", SessionObj->HasField(TEXT("target_device")));
+
+    return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

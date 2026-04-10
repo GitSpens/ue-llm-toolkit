@@ -15,6 +15,8 @@
 #include "EngineUtils.h"
 #include "Components/PrimitiveComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/Pawn.h"
+#include "Misc/DateTime.h"
 
 // ============================================================
 // FMetricSummary
@@ -62,15 +64,89 @@ FRuntimeProfiler::~FRuntimeProfiler()
 }
 
 // ============================================================
-// Stub implementations (Tasks 6+ will flesh these out)
+// Lifecycle — Start / Stop / Tick
 // ============================================================
 
-bool FRuntimeProfiler::Start(float /*InIntervalMs*/, const FString& /*InTargetDevice*/, float /*InSpikeThreshold*/)
+bool FRuntimeProfiler::Start(float InIntervalMs, const FString& InTargetDevice, float InSpikeThreshold)
 {
-    return false;
+    if (bIsActive)
+    {
+        return false; // Already profiling
+    }
+
+    CurrentSession = FProfileSession();
+    CurrentSession.TargetDevice = InTargetDevice;
+    CurrentSession.SpikeThreshold = InSpikeThreshold;
+    IntervalSeconds = FMath::Max(InIntervalMs / 1000.0f, 0.05f); // Minimum 50ms
+
+    // Try to find PIE world
+    UWorld* PIEWorld = nullptr;
+    if (GEditor && GEditor->IsPlaySessionInProgress())
+    {
+        for (const FWorldContext& Context : GEngine->GetWorldContexts())
+        {
+            if (Context.WorldType == EWorldType::PIE && Context.World())
+            {
+                PIEWorld = Context.World();
+                break;
+            }
+        }
+    }
+
+    if (PIEWorld)
+    {
+        CachedPIEWorld = PIEWorld;
+        CurrentSession.LevelName = PIEWorld->GetMapName();
+    }
+
+    // Hook PIE end
+    EndPIEHandle = FEditorDelegates::EndPIE.AddRaw(this, &FRuntimeProfiler::OnPIEEnded);
+
+    // Hook ticker
+    CurrentSession.StartTimeSeconds = FPlatformTime::Seconds();
+    LastSampleTime = 0.0;
+    bIsActive = true;
+
+    TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateRaw(this, &FRuntimeProfiler::TickSample),
+        IntervalSeconds);
+
+    UE_LOG(LogTemp, Log, TEXT("[RuntimeProfiler] Started — interval=%.0fms device=%s threshold=%.1fx"),
+        InIntervalMs, *InTargetDevice, InSpikeThreshold);
+
+    return true;
 }
 
-void FRuntimeProfiler::Stop() {}
+void FRuntimeProfiler::Stop()
+{
+    if (!bIsActive)
+    {
+        return;
+    }
+
+    bIsActive = false;
+    CurrentSession.EndTimeSeconds = FPlatformTime::Seconds();
+
+    // Unhook ticker
+    if (TickerHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+        TickerHandle.Reset();
+    }
+
+    // Unhook PIE delegate
+    if (EndPIEHandle.IsValid())
+    {
+        FEditorDelegates::EndPIE.Remove(EndPIEHandle);
+        EndPIEHandle.Reset();
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("[RuntimeProfiler] Stopped — %d samples collected over %.1fs"),
+        CurrentSession.Samples.Num(),
+        CurrentSession.EndTimeSeconds - CurrentSession.StartTimeSeconds);
+
+    ProcessResults();
+}
 
 int32 FRuntimeProfiler::GetSampleCount() const
 {
@@ -79,7 +155,11 @@ int32 FRuntimeProfiler::GetSampleCount() const
 
 double FRuntimeProfiler::GetElapsedSeconds() const
 {
-    return 0.0;
+    if (bIsActive)
+    {
+        return FPlatformTime::Seconds() - CurrentSession.StartTimeSeconds;
+    }
+    return CurrentSession.EndTimeSeconds - CurrentSession.StartTimeSeconds;
 }
 
 const FProfileAnalysis* FRuntimeProfiler::GetLastAnalysis() const
@@ -87,28 +167,342 @@ const FProfileAnalysis* FRuntimeProfiler::GetLastAnalysis() const
     return LastAnalysis.IsValid() ? LastAnalysis.Get() : nullptr;
 }
 
+// ============================================================
+// Tick — Sample Capture
+// ============================================================
+
 bool FRuntimeProfiler::TickSample(float /*DeltaTime*/)
 {
-    return false;
+    if (!bIsActive)
+    {
+        return false; // Remove ticker
+    }
+
+    // Find PIE world if not cached
+    UWorld* PIEWorld = CachedPIEWorld.Get();
+    if (!PIEWorld)
+    {
+        for (const FWorldContext& Context : GEngine->GetWorldContexts())
+        {
+            if (Context.WorldType == EWorldType::PIE && Context.World())
+            {
+                PIEWorld = Context.World();
+                CachedPIEWorld = PIEWorld;
+                CurrentSession.LevelName = PIEWorld->GetMapName();
+                break;
+            }
+        }
+    }
+
+    if (!PIEWorld)
+    {
+        return true; // Keep ticking, PIE might start soon
+    }
+
+    FProfileSample Sample = CaptureSample(PIEWorld);
+    Sample.TimestampSeconds = FPlatformTime::Seconds() - CurrentSession.StartTimeSeconds;
+    CurrentSession.Samples.Add(MoveTemp(Sample));
+
+    return true; // Keep ticking
 }
 
-void FRuntimeProfiler::OnPIEEnded(bool /*bIsSimulating*/) {}
+// ============================================================
+// PIE End Callback
+// ============================================================
 
-void FRuntimeProfiler::ProcessResults() {}
-
-FProfileSample FRuntimeProfiler::CaptureSample(UWorld* /*PIEWorld*/) const
+void FRuntimeProfiler::OnPIEEnded(bool /*bIsSimulating*/)
 {
-    return FProfileSample();
+    if (bIsActive)
+    {
+        Stop();
+    }
 }
 
-FString FRuntimeProfiler::WriteResultsToDisk(const FProfileSession& /*Session*/, const FProfileAnalysis& /*Analysis*/)
+// ============================================================
+// Process Results
+// ============================================================
+
+void FRuntimeProfiler::ProcessResults()
 {
-    return FString();
+    if (CurrentSession.Samples.IsEmpty())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[RuntimeProfiler] No samples collected — skipping analysis."));
+        return;
+    }
+
+    LastAnalysis = MakeShared<FProfileAnalysis>();
+
+    // Pass 1: Summary
+    ComputeSummary(CurrentSession, *LastAnalysis);
+
+    // Pass 2: Spike detection with spatial correlation
+    UWorld* EditorWorld = nullptr;
+    if (GEditor)
+    {
+        EditorWorld = GEditor->GetEditorWorldContext().World();
+    }
+    DetectSpikes(CurrentSession, EditorWorld, *LastAnalysis);
+
+    // Pass 3: Recommendations
+    FDeviceBudget Budget = FDeviceBudget::Get(CurrentSession.TargetDevice);
+    GenerateRecommendations(*LastAnalysis, Budget);
+
+    // Write to disk
+    LastAnalysis->OutputDir = WriteResultsToDisk(CurrentSession, *LastAnalysis);
+
+    UE_LOG(LogTemp, Log, TEXT("[RuntimeProfiler] Analysis complete — %d spikes, %d recommendations, output: %s"),
+        LastAnalysis->Spikes.Num(), LastAnalysis->Recommendations.Num(), *LastAnalysis->OutputDir);
 }
 
-TSharedPtr<FJsonObject> FRuntimeProfiler::AnalysisToJson(const FProfileAnalysis& /*Analysis*/, bool /*bFullDetail*/)
+// ============================================================
+// Sample Capture
+// ============================================================
+
+FProfileSample FRuntimeProfiler::CaptureSample(UWorld* PIEWorld) const
 {
-    return MakeShared<FJsonObject>();
+    FProfileSample Sample;
+
+    // Frame timing via FStatUnitData
+    UGameViewportClient* Viewport = PIEWorld->GetGameViewport();
+    if (Viewport)
+    {
+        const FStatUnitData* StatData = Viewport->GetStatUnitData();
+        if (StatData)
+        {
+            Sample.FrameTimeMs    = StatData->RawFrameTime;
+            Sample.GameThreadMs   = StatData->RawGameThreadTime;
+            Sample.RenderThreadMs = StatData->RawRenderThreadTime;
+            Sample.GPUTimeMs      = StatData->RawGPUFrameTime[0];
+        }
+    }
+
+    // Draw calls via globally accessible RHI counter
+    extern ENGINE_API int32 GNumDrawCallsRHI;
+    Sample.DrawCalls = GNumDrawCallsRHI;
+
+    // Player and camera position
+    APlayerController* PC = PIEWorld->GetFirstPlayerController();
+    if (PC)
+    {
+        if (APawn* Pawn = PC->GetPawn())
+        {
+            Sample.PlayerLocation = Pawn->GetActorLocation();
+        }
+
+        FVector ViewLoc;
+        FRotator ViewRot;
+        PC->GetPlayerViewPoint(ViewLoc, ViewRot);
+        Sample.CameraLocation = ViewLoc;
+        Sample.CameraRotation = ViewRot;
+    }
+
+    // Sublevel tracking
+    if (PIEWorld->GetCurrentLevel())
+    {
+        Sample.SubLevelName = PIEWorld->GetCurrentLevel()->GetOuter()->GetName();
+    }
+
+    return Sample;
+}
+
+// ============================================================
+// JSON Serialization
+// ============================================================
+
+static TSharedPtr<FJsonObject> MetricSummaryToJson(const FMetricSummary& Summary)
+{
+    TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+    Obj->SetNumberField(TEXT("min"), Summary.Min);
+    Obj->SetNumberField(TEXT("avg"), Summary.Avg);
+    Obj->SetNumberField(TEXT("max"), Summary.Max);
+    Obj->SetNumberField(TEXT("p95"), Summary.P95);
+    return Obj;
+}
+
+static TSharedPtr<FJsonObject> SpikeActorToJson(const FSpikeActor& Actor)
+{
+    TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+    Obj->SetStringField(TEXT("name"), Actor.ActorName);
+    Obj->SetStringField(TEXT("class"), Actor.ActorClass);
+    Obj->SetNumberField(TEXT("triangles"), Actor.TriangleCount);
+    Obj->SetNumberField(TEXT("draw_calls"), Actor.EstimatedDrawCalls);
+    Obj->SetNumberField(TEXT("materials"), Actor.MaterialCount);
+    Obj->SetNumberField(TEXT("lods"), Actor.LODCount);
+    Obj->SetBoolField(TEXT("shadow_casting"), Actor.bShadowCasting);
+    return Obj;
+}
+
+TSharedPtr<FJsonObject> FRuntimeProfiler::AnalysisToJson(const FProfileAnalysis& Analysis, bool bFullDetail)
+{
+    TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+
+    // Session metadata
+    TSharedPtr<FJsonObject> SessionObj = MakeShared<FJsonObject>();
+    SessionObj->SetNumberField(TEXT("duration_s"),   Analysis.DurationSeconds);
+    SessionObj->SetNumberField(TEXT("sample_count"), Analysis.SampleCount);
+    SessionObj->SetStringField(TEXT("level"),        Analysis.LevelName);
+    SessionObj->SetStringField(TEXT("target_device"), Analysis.TargetDevice);
+    Root->SetObjectField(TEXT("session"), SessionObj);
+
+    // Summary
+    TSharedPtr<FJsonObject> SummaryObj = MakeShared<FJsonObject>();
+    SummaryObj->SetObjectField(TEXT("fps"),               MetricSummaryToJson(Analysis.FPS));
+    SummaryObj->SetObjectField(TEXT("frame_time_ms"),     MetricSummaryToJson(Analysis.FrameTimeMs));
+    SummaryObj->SetStringField(TEXT("bottleneck_thread"), Analysis.BottleneckThread);
+    SummaryObj->SetObjectField(TEXT("draw_calls"),        MetricSummaryToJson(Analysis.DrawCallsSummary));
+    SummaryObj->SetObjectField(TEXT("triangles_rendered"), MetricSummaryToJson(Analysis.TrianglesSummary));
+    SummaryObj->SetObjectField(TEXT("memory_mb"),         MetricSummaryToJson(Analysis.MemoryMBSummary));
+    Root->SetObjectField(TEXT("summary"), SummaryObj);
+
+    // Spike count
+    Root->SetNumberField(TEXT("spike_count"), Analysis.Spikes.Num());
+
+    // Recommendations
+    TArray<TSharedPtr<FJsonValue>> RecsArray;
+    for (const FString& Rec : Analysis.Recommendations)
+    {
+        RecsArray.Add(MakeShared<FJsonValueString>(Rec));
+    }
+    Root->SetArrayField(TEXT("recommendations"), RecsArray);
+
+    // Device warnings
+    TArray<TSharedPtr<FJsonValue>> WarningsArray;
+    for (const FString& Warning : Analysis.DeviceWarnings)
+    {
+        WarningsArray.Add(MakeShared<FJsonValueString>(Warning));
+    }
+    Root->SetArrayField(TEXT("device_warnings"), WarningsArray);
+
+    // Output dir
+    Root->SetStringField(TEXT("output_dir"), Analysis.OutputDir);
+
+    // Full detail: add per-spike breakdowns
+    if (bFullDetail && Analysis.Spikes.Num() > 0)
+    {
+        TArray<TSharedPtr<FJsonValue>> SpikesArray;
+        for (const FSpikeCluster& Spike : Analysis.Spikes)
+        {
+            TSharedPtr<FJsonObject> SpikeObj = MakeShared<FJsonObject>();
+
+            TArray<TSharedPtr<FJsonValue>> FrameRange;
+            FrameRange.Add(MakeShared<FJsonValueNumber>(Spike.FrameStart));
+            FrameRange.Add(MakeShared<FJsonValueNumber>(Spike.FrameEnd));
+            SpikeObj->SetArrayField(TEXT("frame_range"), FrameRange);
+
+            TArray<TSharedPtr<FJsonValue>> TimeRange;
+            TimeRange.Add(MakeShared<FJsonValueNumber>(Spike.TimeStartSeconds));
+            TimeRange.Add(MakeShared<FJsonValueNumber>(Spike.TimeEndSeconds));
+            SpikeObj->SetArrayField(TEXT("time_range_s"), TimeRange);
+
+            TSharedPtr<FJsonObject> LocObj = MakeShared<FJsonObject>();
+            LocObj->SetNumberField(TEXT("x"), Spike.Location.X);
+            LocObj->SetNumberField(TEXT("y"), Spike.Location.Y);
+            LocObj->SetNumberField(TEXT("z"), Spike.Location.Z);
+            SpikeObj->SetObjectField(TEXT("location"), LocObj);
+
+            SpikeObj->SetNumberField(TEXT("avg_frame_time_ms"), Spike.AvgFrameTimeMs);
+
+            TSharedPtr<FJsonObject> CauseObj = MakeShared<FJsonObject>();
+
+            TArray<TSharedPtr<FJsonValue>> FrustumActors;
+            for (const FSpikeActor& Actor : Spike.ActorsInFrustum)
+            {
+                FrustumActors.Add(MakeShared<FJsonValueObject>(SpikeActorToJson(Actor)));
+            }
+            CauseObj->SetArrayField(TEXT("actors_in_frustum"), FrustumActors);
+
+            TArray<TSharedPtr<FJsonValue>> ShadowActors;
+            for (const FSpikeActor& Actor : Spike.ShadowCastersBehindCamera)
+            {
+                ShadowActors.Add(MakeShared<FJsonValueObject>(SpikeActorToJson(Actor)));
+            }
+            CauseObj->SetArrayField(TEXT("shadow_casters_behind_camera"), ShadowActors);
+
+            CauseObj->SetNumberField(TEXT("total_draw_calls"),          Spike.TotalDrawCalls);
+            CauseObj->SetNumberField(TEXT("total_triangles_in_frustum"), Spike.TotalTrianglesInFrustum);
+            CauseObj->SetStringField(TEXT("delta_from_smooth"),         Spike.DeltaFromSmooth);
+            SpikeObj->SetObjectField(TEXT("cause_analysis"), CauseObj);
+
+            SpikesArray.Add(MakeShared<FJsonValueObject>(SpikeObj));
+        }
+        Root->SetArrayField(TEXT("spikes"), SpikesArray);
+    }
+
+    return Root;
+}
+
+// ============================================================
+// Disk Output
+// ============================================================
+
+FString FRuntimeProfiler::WriteResultsToDisk(const FProfileSession& Session, const FProfileAnalysis& Analysis)
+{
+    // Create output directory with timestamp
+    FString Timestamp = FDateTime::Now().ToString(TEXT("%Y-%m-%d_%H%M%S"));
+    FString OutputDir = FPaths::Combine(
+        FPaths::ProjectSavedDir(), TEXT("Profiling"), TEXT("RuntimeProfiler"), Timestamp);
+    IFileManager::Get().MakeDirectory(*OutputDir, true);
+
+    // Write manifest.json
+    {
+        TSharedPtr<FJsonObject> Manifest = MakeShared<FJsonObject>();
+        Manifest->SetStringField(TEXT("feature"),      TEXT("runtime-performance-analyzer"));
+        Manifest->SetStringField(TEXT("timestamp"),    Timestamp);
+        Manifest->SetStringField(TEXT("level"),        Session.LevelName);
+        Manifest->SetStringField(TEXT("target_device"), Session.TargetDevice);
+        Manifest->SetNumberField(TEXT("sample_count"), Session.Samples.Num());
+        Manifest->SetNumberField(TEXT("duration_s"),   Analysis.DurationSeconds);
+        Manifest->SetNumberField(TEXT("spike_count"),  Analysis.Spikes.Num());
+
+        FString ManifestStr;
+        TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ManifestStr);
+        FJsonSerializer::Serialize(Manifest.ToSharedRef(), Writer);
+        FFileHelper::SaveStringToFile(ManifestStr, *FPaths::Combine(OutputDir, TEXT("manifest.json")));
+    }
+
+    // Write summary.json (full analysis with spike breakdowns)
+    {
+        TSharedPtr<FJsonObject> SummaryJson = AnalysisToJson(Analysis, true);
+        FString SummaryStr;
+        TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&SummaryStr);
+        FJsonSerializer::Serialize(SummaryJson.ToSharedRef(), Writer);
+        FFileHelper::SaveStringToFile(SummaryStr, *FPaths::Combine(OutputDir, TEXT("summary.json")));
+    }
+
+    // Write session.json (raw time-series data)
+    {
+        TSharedPtr<FJsonObject> SessionJson = MakeShared<FJsonObject>();
+        TArray<TSharedPtr<FJsonValue>> SamplesArray;
+        for (const FProfileSample& S : Session.Samples)
+        {
+            TSharedPtr<FJsonObject> SObj = MakeShared<FJsonObject>();
+            SObj->SetNumberField(TEXT("t"),          S.TimestampSeconds);
+            SObj->SetNumberField(TEXT("frame_ms"),   S.FrameTimeMs);
+            SObj->SetNumberField(TEXT("game_ms"),    S.GameThreadMs);
+            SObj->SetNumberField(TEXT("render_ms"),  S.RenderThreadMs);
+            SObj->SetNumberField(TEXT("gpu_ms"),     S.GPUTimeMs);
+            SObj->SetNumberField(TEXT("draw_calls"), S.DrawCalls);
+            SObj->SetNumberField(TEXT("triangles"),  S.TrianglesRendered);
+            SObj->SetNumberField(TEXT("mem_mb"),     S.MemoryUsedMB);
+            SObj->SetNumberField(TEXT("tex_mb"),     S.TexturePoolUsedMB);
+
+            TSharedPtr<FJsonObject> PosObj = MakeShared<FJsonObject>();
+            PosObj->SetNumberField(TEXT("x"), S.PlayerLocation.X);
+            PosObj->SetNumberField(TEXT("y"), S.PlayerLocation.Y);
+            PosObj->SetNumberField(TEXT("z"), S.PlayerLocation.Z);
+            SObj->SetObjectField(TEXT("player_pos"), PosObj);
+
+            SamplesArray.Add(MakeShared<FJsonValueObject>(SObj));
+        }
+        SessionJson->SetArrayField(TEXT("samples"), SamplesArray);
+
+        FString SessionStr;
+        TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&SessionStr);
+        FJsonSerializer::Serialize(SessionJson.ToSharedRef(), Writer);
+        FFileHelper::SaveStringToFile(SessionStr, *FPaths::Combine(OutputDir, TEXT("session.json")));
+    }
+
+    return OutputDir;
 }
 
 // ============================================================
