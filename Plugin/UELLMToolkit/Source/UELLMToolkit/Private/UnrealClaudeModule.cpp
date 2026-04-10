@@ -20,6 +20,7 @@
 #include "WorkspaceMenuStructureModule.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HttpServerModule.h"
+#include "Interfaces/IPluginManager.h"
 
 DEFINE_LOG_CATEGORY(LogUnrealClaude);
 
@@ -156,6 +157,9 @@ void FUnrealClaudeModule::StartupModule()
 		UE_LOG(LogUnrealClaude, Warning, TEXT("Claude CLI not found. Please install with: npm install -g @anthropic-ai/claude-code"));
 	}
 
+	// Auto-copy CLAUDE.md.default to project root if CLAUDE.md doesn't exist yet
+	CopyClaudeMdIfMissing();
+
 	// Start MCP Server
 	StartMCPServer();
 
@@ -277,6 +281,37 @@ uint32 FUnrealClaudeModule::GetMCPServerPort()
 		}
 	}
 	return Port;
+}
+
+void FUnrealClaudeModule::CopyClaudeMdIfMissing()
+{
+	const FString ProjectDir = FPaths::ProjectDir();
+	const FString DestPath = ProjectDir / TEXT("CLAUDE.md");
+
+	if (FPaths::FileExists(DestPath))
+	{
+		return;
+	}
+
+	// Locate CLAUDE.md.default shipped with the plugin
+	const FString PluginDir = IPluginManager::Get().FindPlugin(TEXT("UELLMToolkit"))->GetBaseDir();
+	const FString SourcePath = PluginDir / TEXT("CLAUDE.md.default");
+
+	if (!FPaths::FileExists(SourcePath))
+	{
+		UE_LOG(LogUnrealClaude, Warning, TEXT("CLAUDE.md.default not found at: %s"), *SourcePath);
+		return;
+	}
+
+	const uint32 CopyResult = IFileManager::Get().Copy(*DestPath, *SourcePath);
+	if (CopyResult == COPY_OK)
+	{
+		UE_LOG(LogUnrealClaude, Log, TEXT("Copied CLAUDE.md to project root: %s"), *DestPath);
+	}
+	else
+	{
+		UE_LOG(LogUnrealClaude, Warning, TEXT("Failed to copy CLAUDE.md.default to project root (error %u)"), CopyResult);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -34,6 +34,7 @@ private:
 	void UnregisterMenus();
 	void StartMCPServer();
 	void StopMCPServer();
+	void CopyClaudeMdIfMissing();
 
 	TSharedPtr<class FUICommandList> PluginCommands;
 	TSharedPtr<class SDockTab> ClaudeTab;
