@@ -66,9 +66,9 @@ bool FScenePerformance_UnknownOperation::RunTest(const FString& Parameters)
 
 	FMCPToolResult Result = Tool.Execute(Params);
 
-	TestTrue("Should be error", Result.bIsError);
+	TestTrue("Should be error", !Result.bSuccess);
 	TestTrue("Error mentions unknown operation",
-		Result.Content.Contains(TEXT("Unknown operation")));
+		Result.Message.Contains(TEXT("Unknown operation")));
 
 	return true;
 }
@@ -86,10 +86,10 @@ bool FScenePerformance_MissingOperation::RunTest(const FString& Parameters)
 
 	FMCPToolResult Result = Tool.Execute(Params);
 
-	TestTrue("Should be error", Result.bIsError);
+	TestTrue("Should be error", !Result.bSuccess);
 	TestTrue("Error mentions missing required parameter",
-		Result.Content.Contains(TEXT("Missing required parameter")) ||
-		Result.Content.Contains(TEXT("required")));
+		Result.Message.Contains(TEXT("Missing required parameter")) ||
+		Result.Message.Contains(TEXT("required")));
 
 	return true;
 }
@@ -109,9 +109,9 @@ bool FScenePerformance_AnalyzeScene_InvalidSortBy::RunTest(const FString& Parame
 
 	FMCPToolResult Result = Tool.Execute(Params);
 
-	TestTrue("Should be error", Result.bIsError);
+	TestTrue("Should be error", !Result.bSuccess);
 	TestTrue("Error mentions invalid sort_by",
-		Result.Content.Contains(TEXT("Invalid sort_by value")));
+		Result.Message.Contains(TEXT("Invalid sort_by value")));
 
 	return true;
 }
@@ -516,9 +516,9 @@ bool FScenePerformance_OperationAlias_Analyse::RunTest(const FString& Parameters
 	FMCPToolResult Result = Tool.Execute(Params);
 
 	// If alias worked, we get sort_by error (not unknown operation error)
-	TestTrue("Should be error", Result.bIsError);
+	TestTrue("Should be error", !Result.bSuccess);
 	TestTrue("Should hit sort_by validation, not unknown operation",
-		Result.Content.Contains(TEXT("Invalid sort_by value")));
+		Result.Message.Contains(TEXT("Invalid sort_by value")));
 
 	return true;
 }
