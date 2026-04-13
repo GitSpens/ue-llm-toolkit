@@ -1,0 +1,14 @@
+{
+  "feature": "runtime-performance-analyzer",
+  "branch": "feature/runtime-performance-analyzer",
+  "baseBranch": "main",
+  "phase": "implemented",
+  "created": "2026-04-10",
+  "artifacts": {
+    "discovery": "docs/features/runtime-performance-analyzer/spec.md",
+    "spec": "docs/features/runtime-performance-analyzer/spec.md",
+    "verified": true,
+    "implemented": true,
+    "tested": true
+  }
+}
