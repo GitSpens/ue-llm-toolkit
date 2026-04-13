@@ -296,11 +296,9 @@ FProfileSample FRuntimeProfiler::CaptureSample(UWorld* PIEWorld) const
         }
     }
 
-    // Draw calls and triangles from RHI globals
-    extern ENGINE_API int32 GNumDrawCallsRHI;
-    extern ENGINE_API int32 GNumPrimitivesDrawnRHI;
-    Sample.DrawCalls = GNumDrawCallsRHI;
-    Sample.TrianglesRendered = GNumPrimitivesDrawnRHI;
+    // Draw calls and triangles from RHI globals (arrays indexed by GPU in UE 5.7)
+    Sample.DrawCalls = GNumDrawCallsRHI[0];
+    Sample.TrianglesRendered = GNumPrimitivesDrawnRHI[0];
 
     // Memory
     FPlatformMemoryStats MemStats = FPlatformMemory::GetStats();
