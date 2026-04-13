@@ -7,12 +7,15 @@
 #include "Engine/GameViewportClient.h"
 #include "Editor.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformMemory.h"
+#include "Misc/App.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "Dom/JsonValue.h"
 #include "EngineUtils.h"
+#include "RHIStats.h"
 #include "Components/PrimitiveComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
@@ -107,6 +110,12 @@ bool FRuntimeProfiler::Start(float InIntervalMs, const FString& InTargetDevice, 
     LastSampleTime = 0.0;
     bIsActive = true;
 
+    // Enable stat unit for accurate per-thread timing
+    if (GEngine)
+    {
+        GEngine->Exec(nullptr, TEXT("stat unit"));
+    }
+
     TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
         FTickerDelegate::CreateRaw(this, &FRuntimeProfiler::TickSample),
         IntervalSeconds);
@@ -144,6 +153,12 @@ void FRuntimeProfiler::Stop()
     UE_LOG(LogTemp, Log, TEXT("[RuntimeProfiler] Stopped — %d samples collected over %.1fs"),
         CurrentSession.Samples.Num(),
         CurrentSession.EndTimeSeconds - CurrentSession.StartTimeSeconds);
+
+    // Disable stat unit
+    if (GEngine)
+    {
+        GEngine->Exec(nullptr, TEXT("stat unit"));
+    }
 
     ProcessResults();
 }
@@ -262,13 +277,18 @@ FProfileSample FRuntimeProfiler::CaptureSample(UWorld* PIEWorld) const
 {
     FProfileSample Sample;
 
-    // Frame timing via FStatUnitData
-    UGameViewportClient* Viewport = PIEWorld->GetGameViewport();
+    // Frame timing — FApp::GetDeltaTime() always works
+    float DeltaSeconds = FApp::GetDeltaTime();
+    Sample.FrameTimeMs = DeltaSeconds * 1000.0f;
+
+    // Thread times via FStatUnitData (populated after stat unit is enabled)
+    UGameViewportClient* Viewport = PIEWorld ? PIEWorld->GetGameViewport() : nullptr;
     if (Viewport)
     {
         const FStatUnitData* StatData = Viewport->GetStatUnitData();
-        if (StatData)
+        if (StatData && StatData->RawFrameTime > 0.0f)
         {
+            // Use more accurate stat unit data when available
             Sample.FrameTimeMs    = StatData->RawFrameTime;
             Sample.GameThreadMs   = StatData->RawGameThreadTime;
             Sample.RenderThreadMs = StatData->RawRenderThreadTime;
@@ -276,12 +296,18 @@ FProfileSample FRuntimeProfiler::CaptureSample(UWorld* PIEWorld) const
         }
     }
 
-    // Draw calls via globally accessible RHI counter
+    // Draw calls and triangles from RHI globals
     extern ENGINE_API int32 GNumDrawCallsRHI;
+    extern ENGINE_API int32 GNumPrimitivesDrawnRHI;
     Sample.DrawCalls = GNumDrawCallsRHI;
+    Sample.TrianglesRendered = GNumPrimitivesDrawnRHI;
+
+    // Memory
+    FPlatformMemoryStats MemStats = FPlatformMemory::GetStats();
+    Sample.MemoryUsedMB = static_cast<float>(MemStats.UsedPhysical) / (1024.0f * 1024.0f);
 
     // Player and camera position
-    APlayerController* PC = PIEWorld->GetFirstPlayerController();
+    APlayerController* PC = PIEWorld ? PIEWorld->GetFirstPlayerController() : nullptr;
     if (PC)
     {
         if (APawn* Pawn = PC->GetPawn())
@@ -297,7 +323,7 @@ FProfileSample FRuntimeProfiler::CaptureSample(UWorld* PIEWorld) const
     }
 
     // Sublevel tracking
-    if (PIEWorld->GetCurrentLevel())
+    if (PIEWorld && PIEWorld->GetCurrentLevel())
     {
         Sample.SubLevelName = PIEWorld->GetCurrentLevel()->GetOuter()->GetName();
     }
